@@ -62,16 +62,45 @@ void app_main(void)
     reg_area.access = MB_ACCESS_RW;
     ESP_ERROR_CHECK(mbc_slave_set_descriptor(mbc_slave_handle, reg_area));
 
-    // Configure UART pins and RS485 half-duplex mode
+    // Configure UART pins and RS485 half-duplex mode (before starting)
     ESP_ERROR_CHECK(uart_set_pin(MB_UART_NUM, MB_UART_TX_PIN, MB_UART_RX_PIN, MB_UART_RTS_PIN, UART_PIN_NO_CHANGE));
     ESP_ERROR_CHECK(uart_set_mode(MB_UART_NUM, UART_MODE_RS485_HALF_DUPLEX));
 
     // Start Modbus controller
     ESP_ERROR_CHECK(mbc_slave_start(mbc_slave_handle));
     ESP_LOGI(TAG, "Modbus RTU slave started: UART%d, 9600-8N1, addr=%d", (int)MB_UART_NUM, MB_SLAVE_ADDRESS);
+    ESP_LOGI(TAG, "Holding registers initialized: [0]=%d, [1]=%d, [2]=%d, [3]=%d, [4]=%d", 
+             holding_registers[0], holding_registers[1], holding_registers[2], 
+             holding_registers[3], holding_registers[4]);
 
-    // Idle loop; Modbus stack runs in its own tasks
+    // Main loop: check for Modbus events
+    mb_param_info_t reg_info;
+    const mb_event_group_t mb_evt_mask = MB_EVENT_HOLDING_REG_RD | MB_EVENT_HOLDING_REG_WR;
+    
     while (1) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        // Check for Modbus read/write events (non-blocking)
+        mb_event_group_t event = mbc_slave_check_event(mbc_slave_handle, mb_evt_mask);
+        
+        if (event) {
+            // Get parameter information from queue
+            esp_err_t err = mbc_slave_get_param_info(mbc_slave_handle, &reg_info, pdMS_TO_TICKS(100));
+            if (err == ESP_OK) {
+                const char* rw_str = (reg_info.type & MB_EVENT_HOLDING_REG_RD) ? "READ" : "WRITE";
+                ESP_LOGI(TAG, "HOLDING %s - ADDR:%u, SIZE:%u, INST_ADDR:0x%p", 
+                         rw_str, 
+                         (unsigned)reg_info.mb_offset,
+                         (unsigned)reg_info.size,
+                         (void*)reg_info.address);
+                
+                // Log register values after read/write
+                if (reg_info.mb_offset < 10) {
+                    ESP_LOGI(TAG, "Register values: [0]=%d, [1]=%d, [2]=%d, [3]=%d, [4]=%d",
+                             holding_registers[0], holding_registers[1], holding_registers[2],
+                             holding_registers[3], holding_registers[4]);
+                }
+            }
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(10)); // Small delay to prevent CPU spinning
     }
 }
