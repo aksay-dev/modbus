@@ -87,6 +87,9 @@ void app_main(void)
     
     ESP_LOGI(TAG, "Entering main event loop, waiting for Modbus requests...");
     
+    // Diagnostic counter
+    static uint32_t loop_count = 0;
+    
     while (1) {
         // Check for Modbus read/write events (non-blocking)
         mb_event_group_t event = mbc_slave_check_event(mbc_slave_handle, mb_evt_mask);
@@ -111,6 +114,16 @@ void app_main(void)
                          holding_registers[6], holding_registers[7], holding_registers[8], holding_registers[9]);
             } else {
                 ESP_LOGW(TAG, "Failed to get param info: 0x%x", err);
+            }
+        }
+        
+        // Periodically check UART buffer (every 5 seconds) for diagnostics
+        loop_count++;
+        if (loop_count % 500 == 0) {  // 500 * 10ms = 5 seconds
+            size_t buffered_size = 0;
+            uart_get_buffered_data_len(MB_UART_NUM, &buffered_size);
+            if (buffered_size > 0) {
+                ESP_LOGI(TAG, "UART buffer has %d bytes (data detected but not processed)", (int)buffered_size);
             }
         }
         
