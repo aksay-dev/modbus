@@ -88,7 +88,7 @@ void app_main(void)
     ESP_LOGI(TAG, "Entering main event loop, waiting for Modbus requests...");
     
     // Diagnostic counter
-    static uint32_t loop_count = 0;
+    uint32_t loop_count = 0;
     
     while (1) {
         // Check for Modbus read/write events (non-blocking)
@@ -117,14 +117,13 @@ void app_main(void)
             }
         }
         
-        // Periodically check UART buffer (every 5 seconds) for diagnostics
+        // Periodically check UART buffer and show status (every 5 seconds)
         loop_count++;
-        if (loop_count % 500 == 0) {  // 500 * 10ms = 5 seconds
+        if (loop_count >= 500) {  // 500 * 10ms = 5 seconds
             size_t buffered_size = 0;
             uart_get_buffered_data_len(MB_UART_NUM, &buffered_size);
-            if (buffered_size > 0) {
-                ESP_LOGI(TAG, "UART buffer has %d bytes (data detected but not processed)", (int)buffered_size);
-            }
+            ESP_LOGI(TAG, "Status check: UART buffer=%d bytes, loop_count=%lu", (int)buffered_size, (unsigned long)loop_count);
+            loop_count = 0;  // Reset counter
         }
         
         vTaskDelay(pdMS_TO_TICKS(10)); // Small delay to prevent CPU spinning
