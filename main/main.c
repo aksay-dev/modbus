@@ -89,6 +89,7 @@ void app_main(void)
     
     // Diagnostic counter
     uint32_t loop_count = 0;
+    TickType_t last_wake_time = xTaskGetTickCount();
     
     while (1) {
         // Check for Modbus read/write events (non-blocking)
@@ -122,10 +123,11 @@ void app_main(void)
         if (loop_count >= 500) {  // 500 * 10ms = 5 seconds
             size_t buffered_size = 0;
             uart_get_buffered_data_len(MB_UART_NUM, &buffered_size);
-            ESP_LOGI(TAG, "Status check: UART buffer=%d bytes, loop_count=%lu", (int)buffered_size, (unsigned long)loop_count);
+            ESP_LOGI(TAG, "[%lu] Status: UART buffer=%d bytes, waiting for Modbus requests...", 
+                     (unsigned long)(xTaskGetTickCount() / configTICK_RATE_HZ), (int)buffered_size);
             loop_count = 0;  // Reset counter
         }
         
-        vTaskDelay(pdMS_TO_TICKS(10)); // Small delay to prevent CPU spinning
+        vTaskDelayUntil(&last_wake_time, pdMS_TO_TICKS(10)); // More accurate timing
     }
 }
