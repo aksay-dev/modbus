@@ -32,6 +32,10 @@ static uint16_t holding_registers[10];
 
 void app_main(void)
 {
+    // Enable debug logging for Modbus port (to see incoming/outgoing frames)
+    esp_log_level_set("mb_port.serial", ESP_LOG_DEBUG);
+    esp_log_level_set(TAG, ESP_LOG_INFO);
+
     // Initialize holding registers with values 0..9
     for (uint16_t i = 0; i < (uint16_t)(sizeof(holding_registers) / sizeof(holding_registers[0])); ++i) {
         holding_registers[i] = i;
@@ -58,13 +62,17 @@ void app_main(void)
     reg_area.type = MB_PARAM_HOLDING;
     reg_area.start_offset = 0x0000;
     reg_area.address = (void *)holding_registers;
-    reg_area.size = sizeof(holding_registers); // bytes
+    reg_area.size = sizeof(holding_registers); // 20 bytes for 10 uint16_t registers
     reg_area.access = MB_ACCESS_RW;
     ESP_ERROR_CHECK(mbc_slave_set_descriptor(mbc_slave_handle, reg_area));
+    ESP_LOGI(TAG, "Holding registers mapped: start=0x%04X, size=%d bytes (%d registers)", 
+             reg_area.start_offset, (int)reg_area.size, (int)(reg_area.size / 2));
 
-    // Configure UART pins and RS485 half-duplex mode (before starting)
+    // Configure UART pins and RS485 half-duplex mode (AFTER creating controller, BEFORE starting)
     ESP_ERROR_CHECK(uart_set_pin(MB_UART_NUM, MB_UART_TX_PIN, MB_UART_RX_PIN, MB_UART_RTS_PIN, UART_PIN_NO_CHANGE));
     ESP_ERROR_CHECK(uart_set_mode(MB_UART_NUM, UART_MODE_RS485_HALF_DUPLEX));
+    ESP_LOGI(TAG, "UART pins configured: TX=%d, RX=%d, RTS=%d", 
+             MB_UART_TX_PIN, MB_UART_RX_PIN, MB_UART_RTS_PIN);
 
     // Start Modbus controller
     ESP_ERROR_CHECK(mbc_slave_start(mbc_slave_handle));
@@ -77,27 +85,32 @@ void app_main(void)
     mb_param_info_t reg_info;
     const mb_event_group_t mb_evt_mask = MB_EVENT_HOLDING_REG_RD | MB_EVENT_HOLDING_REG_WR;
     
+    ESP_LOGI(TAG, "Entering main event loop, waiting for Modbus requests...");
+    
     while (1) {
         // Check for Modbus read/write events (non-blocking)
         mb_event_group_t event = mbc_slave_check_event(mbc_slave_handle, mb_evt_mask);
         
         if (event) {
-            // Get parameter information from queue
-            esp_err_t err = mbc_slave_get_param_info(mbc_slave_handle, &reg_info, pdMS_TO_TICKS(100));
+            ESP_LOGI(TAG, "Modbus event detected: 0x%04X", (unsigned)event);
+            // Get parameter information from queue (10 ticks timeout like in example)
+            esp_err_t err = mbc_slave_get_param_info(mbc_slave_handle, &reg_info, 10);
             if (err == ESP_OK) {
                 const char* rw_str = (reg_info.type & MB_EVENT_HOLDING_REG_RD) ? "READ" : "WRITE";
-                ESP_LOGI(TAG, "HOLDING %s - ADDR:%u, SIZE:%u, INST_ADDR:0x%p", 
+                ESP_LOGI(TAG, "HOLDING %s - ADDR:%u, SIZE:%u bytes (%u registers), INST_ADDR:0x%p", 
                          rw_str, 
                          (unsigned)reg_info.mb_offset,
                          (unsigned)reg_info.size,
+                         (unsigned)(reg_info.size / 2),
                          (void*)reg_info.address);
                 
-                // Log register values after read/write
-                if (reg_info.mb_offset < 10) {
-                    ESP_LOGI(TAG, "Register values: [0]=%d, [1]=%d, [2]=%d, [3]=%d, [4]=%d",
-                             holding_registers[0], holding_registers[1], holding_registers[2],
-                             holding_registers[3], holding_registers[4]);
-                }
+                // Log all register values
+                ESP_LOGI(TAG, "Register values: [0]=%d, [1]=%d, [2]=%d, [3]=%d, [4]=%d, [5]=%d, [6]=%d, [7]=%d, [8]=%d, [9]=%d",
+                         holding_registers[0], holding_registers[1], holding_registers[2],
+                         holding_registers[3], holding_registers[4], holding_registers[5],
+                         holding_registers[6], holding_registers[7], holding_registers[8], holding_registers[9]);
+            } else {
+                ESP_LOGW(TAG, "Failed to get param info: 0x%x", err);
             }
         }
         
