@@ -8,6 +8,7 @@
 
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #include "driver/uart.h"
 
@@ -81,25 +82,26 @@ void app_main(void)
              holding_registers[0], holding_registers[1], holding_registers[2], 
              holding_registers[3], holding_registers[4]);
 
-    // Main loop: check for Modbus events
+    // Main loop: check for Modbus events (following official example pattern)
     mb_param_info_t reg_info;
     const mb_event_group_t mb_evt_mask = MB_EVENT_HOLDING_REG_RD | MB_EVENT_HOLDING_REG_WR;
+    #define MB_PAR_INFO_GET_TOUT  10  // Timeout for get parameter info (in ticks)
     
     ESP_LOGI(TAG, "Entering main event loop, waiting for Modbus requests...");
     
     // Diagnostic counter
     uint32_t loop_count = 0;
-    TickType_t last_wake_time = xTaskGetTickCount();
     
     while (1) {
-        // Check for Modbus read/write events (non-blocking)
-        mb_event_group_t event = mbc_slave_check_event(mbc_slave_handle, mb_evt_mask);
+        // Check for Modbus read/write events (following example pattern exactly)
+        (void)mbc_slave_check_event(mbc_slave_handle, mb_evt_mask);
         
-        if (event) {
-            ESP_LOGI(TAG, "Modbus event detected: 0x%04X", (unsigned)event);
-            // Get parameter information from queue (10 ticks timeout like in example)
-            esp_err_t err = mbc_slave_get_param_info(mbc_slave_handle, &reg_info, 10);
-            if (err == ESP_OK) {
+        // Always get parameter information (will timeout if no event, following example)
+        esp_err_t err = mbc_slave_get_param_info(mbc_slave_handle, &reg_info, MB_PAR_INFO_GET_TOUT);
+        
+        if (err == ESP_OK) {
+            // Process only holding register events
+            if (reg_info.type & (MB_EVENT_HOLDING_REG_RD | MB_EVENT_HOLDING_REG_WR)) {
                 const char* rw_str = (reg_info.type & MB_EVENT_HOLDING_REG_RD) ? "READ" : "WRITE";
                 ESP_LOGI(TAG, "HOLDING %s - ADDR:%u, SIZE:%u bytes (%u registers), INST_ADDR:0x%p", 
                          rw_str, 
@@ -113,21 +115,23 @@ void app_main(void)
                          holding_registers[0], holding_registers[1], holding_registers[2],
                          holding_registers[3], holding_registers[4], holding_registers[5],
                          holding_registers[6], holding_registers[7], holding_registers[8], holding_registers[9]);
-            } else {
-                ESP_LOGW(TAG, "Failed to get param info: 0x%x", err);
             }
+        } else if (err != ESP_ERR_TIMEOUT) {
+            // Only log non-timeout errors (timeout is normal when no events)
+            ESP_LOGW(TAG, "Failed to get param info: 0x%x", err);
         }
         
-        // Periodically check UART buffer and show status (every 5 seconds)
+        // Periodically show status (every 5 seconds = 500 iterations * 10ms delay)
         loop_count++;
-        if (loop_count >= 500) {  // 500 * 10ms = 5 seconds
+        if (loop_count >= 500) {
             size_t buffered_size = 0;
             uart_get_buffered_data_len(MB_UART_NUM, &buffered_size);
-            ESP_LOGI(TAG, "[%lu] Status: UART buffer=%d bytes, waiting for Modbus requests...", 
-                     (unsigned long)(xTaskGetTickCount() / configTICK_RATE_HZ), (int)buffered_size);
-            loop_count = 0;  // Reset counter
+            ESP_LOGI(TAG, "[%lu s] Status: UART buffer=%d bytes, waiting for Modbus requests...", 
+                     (unsigned long)(esp_timer_get_time() / 1000000), (int)buffered_size);
+            loop_count = 0;
         }
         
-        vTaskDelayUntil(&last_wake_time, pdMS_TO_TICKS(10)); // More accurate timing
+        // Small delay between iterations
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
