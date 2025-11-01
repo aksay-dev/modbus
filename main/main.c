@@ -85,7 +85,7 @@ void app_main(void)
     // Main loop: check for Modbus events (following official example pattern)
     mb_param_info_t reg_info;
     const mb_event_group_t mb_evt_mask = MB_EVENT_HOLDING_REG_RD | MB_EVENT_HOLDING_REG_WR;
-    #define MB_PAR_INFO_GET_TOUT  10  // Timeout for get parameter info (in ticks)
+    #define MB_PAR_INFO_GET_TOUT  100  // Timeout for get parameter info (in milliseconds)
     
     ESP_LOGI(TAG, "Entering main event loop, waiting for Modbus requests...");
     
@@ -93,10 +93,9 @@ void app_main(void)
     uint32_t loop_count = 0;
     
     while (1) {
-        // Check for Modbus read/write events (following example pattern exactly)
-        (void)mbc_slave_check_event(mbc_slave_handle, mb_evt_mask);
-        
-        // Always get parameter information (will timeout if no event, following example)
+        // Get parameter information directly (will timeout if no event - non-blocking approach)
+        // Note: We skip mbc_slave_check_event because it blocks forever waiting for events
+        // mbc_slave_get_param_info handles timeouts properly
         esp_err_t err = mbc_slave_get_param_info(mbc_slave_handle, &reg_info, MB_PAR_INFO_GET_TOUT);
         
         if (err == ESP_OK) {
@@ -131,7 +130,9 @@ void app_main(void)
             loop_count = 0;
         }
         
-        // Small delay between iterations
-        vTaskDelay(pdMS_TO_TICKS(10));
+        // Small delay between iterations (only if no event was processed)
+        if (err == ESP_ERR_TIMEOUT) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
     }
 }
