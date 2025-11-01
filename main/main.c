@@ -35,6 +35,9 @@ void app_main(void)
 {
     // Enable debug logging for Modbus port (to see incoming/outgoing frames)
     esp_log_level_set("mb_port.serial", ESP_LOG_DEBUG);
+    esp_log_level_set("mbc_serial.slave", ESP_LOG_DEBUG);
+    esp_log_level_set("mbs_rtu", ESP_LOG_DEBUG);
+    esp_log_level_set("mb_obj.slave", ESP_LOG_DEBUG);
     esp_log_level_set(TAG, ESP_LOG_INFO);
 
     // Initialize holding registers with values 0..9
@@ -84,8 +87,11 @@ void app_main(void)
 
     // Main loop: check for Modbus events (following official example pattern)
     mb_param_info_t reg_info;
-    const mb_event_group_t mb_evt_mask = MB_EVENT_HOLDING_REG_RD | MB_EVENT_HOLDING_REG_WR;
-    #define MB_PAR_INFO_GET_TOUT  100  // Timeout for get parameter info (in milliseconds)
+    // Use MB_READ_WRITE_MASK like in the official example (includes all read/write events)
+    const mb_event_group_t mb_evt_mask = MB_EVENT_HOLDING_REG_RD | MB_EVENT_HOLDING_REG_WR | 
+                                         MB_EVENT_INPUT_REG_RD | MB_EVENT_COILS_RD | 
+                                         MB_EVENT_COILS_WR | MB_EVENT_DISCRETE_RD;
+    #define MB_PAR_INFO_GET_TOUT  10  // Timeout in milliseconds (like in example: 10ms)
     
     ESP_LOGI(TAG, "Entering main event loop, waiting for Modbus requests...");
     
@@ -93,9 +99,16 @@ void app_main(void)
     uint32_t loop_count = 0;
     
     while (1) {
-        // Get parameter information directly (will timeout if no event - non-blocking approach)
-        // Note: We skip mbc_slave_check_event because it blocks forever waiting for events
-        // mbc_slave_get_param_info handles timeouts properly
+        // Check UART buffer first to see if data is arriving
+        size_t buffered_size = 0;
+        uart_get_buffered_data_len(MB_UART_NUM, &buffered_size);
+        if (buffered_size > 0) {
+            ESP_LOGI(TAG, "Data detected in UART buffer: %d bytes", (int)buffered_size);
+        }
+        
+        // Get parameter information (will timeout if no event - non-blocking approach)
+        // Note: Modbus stack processes requests automatically in background task
+        // This just notifies us when registers are accessed
         esp_err_t err = mbc_slave_get_param_info(mbc_slave_handle, &reg_info, MB_PAR_INFO_GET_TOUT);
         
         if (err == ESP_OK) {
@@ -120,9 +133,9 @@ void app_main(void)
             ESP_LOGW(TAG, "Failed to get param info: 0x%x", err);
         }
         
-        // Periodically show status (every 5 seconds = 500 iterations * 10ms delay)
+        // Periodically show status (every 5 seconds = 50 iterations * 100ms timeout)
         loop_count++;
-        if (loop_count >= 500) {
+        if (loop_count >= 50) {
             size_t buffered_size = 0;
             uart_get_buffered_data_len(MB_UART_NUM, &buffered_size);
             ESP_LOGI(TAG, "[%lu s] Status: UART buffer=%d bytes, waiting for Modbus requests...", 
