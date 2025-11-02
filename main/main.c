@@ -1,4 +1,4 @@
-// Simple UART listener for diagnostics (UART1, RS485)
+// Simple UART loopback test (RX and TX shorted)
 
 #include <stdio.h>
 #include <stdint.h>
@@ -27,12 +27,13 @@
 
 // Buffer for reading
 #define BUF_SIZE            1024
+#define TEST_DELAY_MS       1000
 
-static const char *TAG = "UART_LISTENER";
+static const char *TAG = "LOOPBACK_TEST";
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "Starting UART listener...");
+    ESP_LOGI(TAG, "Starting UART loopback test (RX-TX shorted)...");
     
     // Configure UART parameters
     uart_config_t uart_config = {
@@ -52,68 +53,105 @@ void app_main(void)
     
     // Set UART pins
     ESP_ERROR_CHECK(uart_set_pin(UART_NUM, UART_TX_PIN, UART_RX_PIN, UART_RTS_PIN, UART_PIN_NO_CHANGE));
+
+    // Set UART mode to UART
+    ESP_ERROR_CHECK(uart_set_mode(UART_NUM, UART_MODE_UART));
     
-    // Set RS485 half-duplex mode
-    ESP_ERROR_CHECK(uart_set_mode(UART_NUM, UART_MODE_RS485_HALF_DUPLEX));
+    ESP_LOGI(TAG, "UART%d configured: %d-8-N-1", UART_NUM, BAUDRATE);
+    ESP_LOGI(TAG, "Pins: TX=%d, RX=%d (shorted)", UART_TX_PIN, UART_RX_PIN);
+    ESP_LOGI(TAG, "Starting loopback test...\n");
     
-    ESP_LOGI(TAG, "UART%d configured: %d-8-N-1, RS485 half-duplex", UART_NUM, BAUDRATE);
-    ESP_LOGI(TAG, "Pins: TX=%d, RX=%d, RTS=%d", UART_TX_PIN, UART_RX_PIN, UART_RTS_PIN);
-    ESP_LOGI(TAG, "Waiting for data...");
+    // Test patterns
+    uint8_t test_patterns[][16] = {
+        "Hello World!",
+        {0x01, 0x02, 0x03, 0x04, 0x05, 0xAA, 0x55, 0xFF},
+        {0x00, 0xFF, 0x55, 0xAA, 0x00},
+    };
+    int pattern_sizes[] = {12, 8, 5};
+    int num_patterns = 3;
     
-    uint8_t data[BUF_SIZE];
-    uint32_t total_bytes = 0;
-    uint32_t packet_count = 0;
+    uint32_t test_count = 0;
+    uint32_t success_count = 0;
+    uint32_t fail_count = 0;
     
     while (1) {
-        // Check how many bytes are available
-        int len = uart_read_bytes(UART_NUM, data, BUF_SIZE - 1, pdMS_TO_TICKS(100));
+        // Clear RX buffer
+        uart_flush(UART_NUM);
         
-        if (len > 0) {
-            data[len] = '\0';  // Null-terminate for printing
-            
-            total_bytes += len;
-            packet_count++;
-            
-            ESP_LOGI(TAG, "=== Packet #%lu, %d bytes ===", (unsigned long)packet_count, len);
-            
-            // Print as HEX
-            ESP_LOGI(TAG, "HEX: ");
-            for (int i = 0; i < len; i++) {
-                printf("%02X ", data[i]);
-                if ((i + 1) % 16 == 0) printf("\n");
-            }
-            printf("\n");
-            
-            // Print as ASCII (if printable)
-            ESP_LOGI(TAG, "ASCII: ");
-            for (int i = 0; i < len; i++) {
-                if (data[i] >= 32 && data[i] < 127) {
-                    printf("%c", data[i]);
-                } else {
-                    printf(".");
-                }
-            }
-            printf("\n");
-            
-            // Print raw data for Modbus analysis
-            ESP_LOGI(TAG, "Raw bytes: ");
-            for (int i = 0; i < len; i++) {
-                printf("%d ", data[i]);
-            }
-            printf("\n");
-            
-            ESP_LOGI(TAG, "Total received: %lu bytes in %lu packets\n", 
-                     (unsigned long)total_bytes, (unsigned long)packet_count);
-        } else {
-            // No data received, periodically show status
-            static uint32_t idle_count = 0;
-            idle_count++;
-            if (idle_count % 50 == 0) {  // Every 5 seconds (50 * 100ms)
-                size_t buffered = 0;
-                uart_get_buffered_data_len(UART_NUM, &buffered);
-                ESP_LOGI(TAG, "[Status] Buffered: %d bytes, Total received: %lu bytes", 
-                         (int)buffered, (unsigned long)total_bytes);
+        // Select test pattern
+        int pattern_idx = test_count % num_patterns;
+        uint8_t *tx_data = test_patterns[pattern_idx];
+        int tx_len = pattern_sizes[pattern_idx];
+        
+        // Send data
+        int bytes_sent = uart_write_bytes(UART_NUM, tx_data, tx_len);
+        ESP_LOGI(TAG, "[Test #%lu] Sent %d bytes:", (unsigned long)(test_count + 1), bytes_sent);
+        
+        // Print TX data
+        printf("TX: ");
+        for (int i = 0; i < tx_len; i++) {
+            printf("%02X ", tx_data[i]);
+        }
+        printf("(");
+        for (int i = 0; i < tx_len; i++) {
+            if (tx_data[i] >= 32 && tx_data[i] < 127) {
+                printf("%c", tx_data[i]);
+            } else {
+                printf(".");
             }
         }
+        printf(")\n");
+        
+        // Wait a bit for data to loop back
+        vTaskDelay(pdMS_TO_TICKS(50));
+        
+        // Read received data
+        uint8_t rx_data[BUF_SIZE];
+        int bytes_received = uart_read_bytes(UART_NUM, rx_data, BUF_SIZE, pdMS_TO_TICKS(100));
+        
+        // Print RX data
+        printf("RX: ");
+        for (int i = 0; i < bytes_received; i++) {
+            printf("%02X ", rx_data[i]);
+        }
+        printf("(");
+        for (int i = 0; i < bytes_received; i++) {
+            if (rx_data[i] >= 32 && rx_data[i] < 127) {
+                printf("%c", rx_data[i]);
+            } else {
+                printf(".");
+            }
+        }
+        printf(")\n");
+        
+        // Compare TX and RX
+        bool match = (bytes_sent == bytes_received);
+        if (match) {
+            for (int i = 0; i < bytes_sent; i++) {
+                if (tx_data[i] != rx_data[i]) {
+                    match = false;
+                    break;
+                }
+            }
+        }
+        
+        // Report result
+        if (match) {
+            ESP_LOGI(TAG, "RESULT: OK (bytes match)\n");
+            success_count++;
+        } else {
+            ESP_LOGE(TAG, "RESULT: FAIL (sent %d, received %d, mismatch)\n", bytes_sent, bytes_received);
+            fail_count++;
+        }
+        
+        test_count++;
+        
+        // Summary every 10 tests
+        if (test_count % 10 == 0) {
+            ESP_LOGI(TAG, "=== Summary: Total=%lu, OK=%lu, FAIL=%lu ===\n", 
+                     (unsigned long)test_count, (unsigned long)success_count, (unsigned long)fail_count);
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(TEST_DELAY_MS));
     }
 }
