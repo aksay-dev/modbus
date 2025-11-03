@@ -1,4 +1,5 @@
-// Simple UART loopback test (RX and TX shorted)
+// Simple Modbus Slave Test
+// This example demonstrates basic Modbus RTU slave functionality
 
 #include <stdio.h>
 #include <stdint.h>
@@ -11,147 +12,167 @@
 #include "esp_log.h"
 
 #include "driver/uart.h"
+#include "mbcontroller.h"
 
-// UART1 configuration
-#define UART_NUM            UART_NUM_1
-#define BAUDRATE            9600
-#define DATA_BITS           UART_DATA_8_BITS
-#define PARITY              UART_PARITY_DISABLE
-#define STOP_BITS           UART_STOP_BITS_1
-#define FLOW_CTRL           UART_HW_FLOWCTRL_DISABLE
+// Modbus configuration
+#define MB_PORT_NUM         UART_NUM_1      // UART port number
+#define MB_SLAVE_ADDR       0x03            // Slave address (1)
+#define MB_BAUD_RATE        9600            // Baud rate
 
 // UART pins: TX, RX, RTS (for RS485 DE/RE)
 #define UART_TX_PIN         25
 #define UART_RX_PIN         26
 #define UART_RTS_PIN        27
 
-// Buffer for reading
-#define BUF_SIZE            1024
-#define TEST_DELAY_MS       1000
+static const char *TAG = "MODBUS_SLAVE";
 
-static const char *TAG = "LOOPBACK_TEST";
+// Simple register structures
+#pragma pack(push, 1)
+typedef struct {
+    uint16_t value0;  // Holding register at address 0
+    uint16_t value1;  // Holding register at address 1
+    uint16_t value2;  // Holding register at address 2
+} holding_regs_t;
 
-void app_main(void)
-{
-    ESP_LOGI(TAG, "Starting UART loopback test (RX-TX shorted)...");
+typedef struct {
+    uint16_t input0;  // Input register at address 0
+    uint16_t input1;  // Input register at address 1
+} input_regs_t;
+#pragma pack(pop)
+
+// Register storage
+static holding_regs_t holding_regs = {100, 200, 300};
+static input_regs_t input_regs = {1000, 2000};
+
+static void *mbc_slave_handle = NULL;
+
+void app_main(void) {
+    ESP_LOGI(TAG, "Starting Modbus Slave test...");
     
-    // Configure UART parameters
-    uart_config_t uart_config = {
-        .baud_rate = BAUDRATE,
-        .data_bits = DATA_BITS,
-        .parity    = PARITY,
-        .stop_bits = STOP_BITS,
-        .flow_ctrl = FLOW_CTRL,
-        .source_clk = UART_SCLK_DEFAULT,
+    mb_register_area_descriptor_t reg_area = {0};
+    mb_param_info_t reg_info;
+    esp_err_t err = ESP_OK;
+
+    // Configure Modbus communication
+    mb_communication_info_t comm_config = {
+        .ser_opts.port = MB_PORT_NUM,
+        .ser_opts.mode = MB_RTU,               // RTU mode
+        .ser_opts.baudrate = MB_BAUD_RATE,
+        .ser_opts.parity = MB_PARITY_NONE,
+        .ser_opts.uid = MB_SLAVE_ADDR,
+        .ser_opts.data_bits = UART_DATA_8_BITS,
+        .ser_opts.stop_bits = UART_STOP_BITS_1
     };
-    
-    // Install UART driver
-    ESP_ERROR_CHECK(uart_driver_install(UART_NUM, BUF_SIZE * 2, 0, 0, NULL, 0));
-    
-    // Configure UART parameters
-    ESP_ERROR_CHECK(uart_param_config(UART_NUM, &uart_config));
-    
-    // Set UART pins
-    ESP_ERROR_CHECK(uart_set_pin(UART_NUM, UART_TX_PIN, UART_RX_PIN, UART_RTS_PIN, UART_PIN_NO_CHANGE));
 
-    // Set UART mode to UART
-    ESP_ERROR_CHECK(uart_set_mode(UART_NUM, UART_MODE_UART));
-    
-    ESP_LOGI(TAG, "UART%d configured: %d-8-N-1", UART_NUM, BAUDRATE);
-    ESP_LOGI(TAG, "Pins: TX=%d, RX=%d (shorted)", UART_TX_PIN, UART_RX_PIN);
-    ESP_LOGI(TAG, "Starting loopback test...\n");
-    
-    // Test patterns
-    uint8_t test_patterns[][16] = {
-        "Hello World!",
-        {0x01, 0x02, 0x03, 0x04, 0x05, 0xAA, 0x55, 0xFF},
-        {0x00, 0xFF, 0x55, 0xAA, 0x00},
-    };
-    int pattern_sizes[] = {12, 8, 5};
-    int num_patterns = 3;
-    
-    uint32_t test_count = 0;
-    uint32_t success_count = 0;
-    uint32_t fail_count = 0;
-    
+    // Create Modbus slave controller
+    ESP_LOGI(TAG, "Initializing Modbus slave controller...");
+    err = mbc_slave_create_serial(&comm_config, &mbc_slave_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to create Modbus slave: 0x%x", err);
+        return;
+    }
+
+    // Set up Holding Registers area (read/write, starting at address 0)
+    reg_area.type = MB_PARAM_HOLDING;
+    reg_area.start_offset = 0;
+    reg_area.address = (void*)&holding_regs;
+    reg_area.size = sizeof(holding_regs_t);
+    reg_area.access = MB_ACCESS_RW;
+    err = mbc_slave_set_descriptor(mbc_slave_handle, reg_area);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set holding registers descriptor: 0x%x", err);
+        goto cleanup;
+    }
+    ESP_LOGI(TAG, "Holding registers configured: address 0, size %d bytes", sizeof(holding_regs_t));
+
+    // Set up Input Registers area (read-only, starting at address 0)
+    reg_area.type = MB_PARAM_INPUT;
+    reg_area.start_offset = 0;
+    reg_area.address = (void*)&input_regs;
+    reg_area.size = sizeof(input_regs_t);
+    reg_area.access = MB_ACCESS_RO;
+    err = mbc_slave_set_descriptor(mbc_slave_handle, reg_area);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set input registers descriptor: 0x%x", err);
+        goto cleanup;
+    }
+    ESP_LOGI(TAG, "Input registers configured: address 0, size %d bytes", sizeof(input_regs_t));
+
+    // Configure UART pins
+    ESP_LOGI(TAG, "Configuring UART pins: TX=%d, RX=%d, RTS=%d", UART_TX_PIN, UART_RX_PIN, UART_RTS_PIN);
+    err = uart_set_pin(MB_PORT_NUM, UART_TX_PIN, UART_RX_PIN, UART_RTS_PIN, UART_PIN_NO_CHANGE);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set UART pins: 0x%x", err);
+        goto cleanup;
+    }
+
+    // Set UART to RS485 half-duplex mode
+    err = uart_set_mode(MB_PORT_NUM, UART_MODE_RS485_HALF_DUPLEX);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set RS485 mode: 0x%x", err);
+        goto cleanup;
+    }
+
+    // Start Modbus slave
+    ESP_LOGI(TAG, "Starting Modbus slave stack...");
+    err = mbc_slave_start(mbc_slave_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start Modbus slave: 0x%x", err);
+        goto cleanup;
+    }
+
+    ESP_LOGI(TAG, "Modbus slave initialized successfully!");
+    ESP_LOGI(TAG, "Slave address: %d, Port: %d, Baud rate: %d", MB_SLAVE_ADDR, MB_PORT_NUM, MB_BAUD_RATE);
+    ESP_LOGI(TAG, "Waiting for Modbus master requests...");
+
+    // Main loop: monitor Modbus events
+    mb_event_group_t event;
+    const mb_event_group_t read_mask = MB_EVENT_INPUT_REG_RD | MB_EVENT_HOLDING_REG_RD;
+    const mb_event_group_t write_mask = MB_EVENT_HOLDING_REG_WR;
+    const mb_event_group_t all_mask = read_mask | write_mask;
+
     while (1) {
-        // Clear RX buffer
-        uart_flush(UART_NUM);
+        // Check for Modbus events
+        event = mbc_slave_check_event(mbc_slave_handle, all_mask);
         
-        // Select test pattern
-        int pattern_idx = test_count % num_patterns;
-        uint8_t *tx_data = test_patterns[pattern_idx];
-        int tx_len = pattern_sizes[pattern_idx];
-        
-        // Send data
-        int bytes_sent = uart_write_bytes(UART_NUM, tx_data, tx_len);
-        ESP_LOGI(TAG, "[Test #%lu] Sent %d bytes:", (unsigned long)(test_count + 1), bytes_sent);
-        
-        // Print TX data
-        printf("TX: ");
-        for (int i = 0; i < tx_len; i++) {
-            printf("%02X ", tx_data[i]);
-        }
-        printf("(");
-        for (int i = 0; i < tx_len; i++) {
-            if (tx_data[i] >= 32 && tx_data[i] < 127) {
-                printf("%c", tx_data[i]);
-            } else {
-                printf(".");
-            }
-        }
-        printf(")\n");
-        
-        // Wait a bit for data to loop back
-        vTaskDelay(pdMS_TO_TICKS(50));
-        
-        // Read received data
-        uint8_t rx_data[BUF_SIZE];
-        int bytes_received = uart_read_bytes(UART_NUM, rx_data, BUF_SIZE, pdMS_TO_TICKS(100));
-        
-        // Print RX data
-        printf("RX: ");
-        for (int i = 0; i < bytes_received; i++) {
-            printf("%02X ", rx_data[i]);
-        }
-        printf("(");
-        for (int i = 0; i < bytes_received; i++) {
-            if (rx_data[i] >= 32 && rx_data[i] < 127) {
-                printf("%c", rx_data[i]);
-            } else {
-                printf(".");
-            }
-        }
-        printf(")\n");
-        
-        // Compare TX and RX
-        bool match = (bytes_sent == bytes_received);
-        if (match) {
-            for (int i = 0; i < bytes_sent; i++) {
-                if (tx_data[i] != rx_data[i]) {
-                    match = false;
-                    break;
+        if (event) {
+            // Get parameter information
+            err = mbc_slave_get_param_info(mbc_slave_handle, &reg_info, pdMS_TO_TICKS(100));
+            if (err == ESP_OK) {
+                const char* type_str = "";
+                
+                if (reg_info.type & MB_EVENT_HOLDING_REG_RD) type_str = "HOLDING REG READ";
+                else if (reg_info.type & MB_EVENT_HOLDING_REG_WR) type_str = "HOLDING REG WRITE";
+                else if (reg_info.type & MB_EVENT_INPUT_REG_RD) type_str = "INPUT REG READ";
+
+                ESP_LOGI(TAG, "%s: addr=%d, size=%d, offset=0x%04X, timestamp=%lu us",
+                         type_str, reg_info.mb_offset, reg_info.size, reg_info.mb_offset, reg_info.time_stamp);
+
+                // Print register values after write operations
+                if (reg_info.type & MB_EVENT_HOLDING_REG_WR) {
+                    ESP_LOGI(TAG, "  Holding regs: [0]=%d, [1]=%d, [2]=%d",
+                             holding_regs.value0, holding_regs.value1, holding_regs.value2);
                 }
             }
         }
-        
-        // Report result
-        if (match) {
-            ESP_LOGI(TAG, "RESULT: OK (bytes match)\n");
-            success_count++;
-        } else {
-            ESP_LOGE(TAG, "RESULT: FAIL (sent %d, received %d, mismatch)\n", bytes_sent, bytes_received);
-            fail_count++;
+
+        // Update input registers periodically (simulate sensor readings)
+        static uint32_t counter = 0;
+        counter++;
+        if (counter % 10000 == 0) {
+            input_regs.input0++;
+            input_regs.input1 += 2;
+            ESP_LOGI(TAG, "Input regs updated: [0]=%d, [1]=%d", input_regs.input0, input_regs.input1);
         }
-        
-        test_count++;
-        
-        // Summary every 10 tests
-        if (test_count % 10 == 0) {
-            ESP_LOGI(TAG, "=== Summary: Total=%lu, OK=%lu, FAIL=%lu ===\n", 
-                     (unsigned long)test_count, (unsigned long)success_count, (unsigned long)fail_count);
-        }
-        
-        vTaskDelay(pdMS_TO_TICKS(TEST_DELAY_MS));
+
+        vTaskDelay(pdMS_TO_TICKS(10)); // Small delay
     }
+
+cleanup:
+    if (mbc_slave_handle) {
+        ESP_LOGI(TAG, "Destroying Modbus slave controller...");
+        mbc_slave_delete(mbc_slave_handle);
+        mbc_slave_handle = NULL;
+    }
+    ESP_LOGI(TAG, "Modbus slave test ended");
 }
